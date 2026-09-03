@@ -55,7 +55,7 @@ export class HinglishVoiceAgent {
 
   public getInitialAgentGreeting(customerName: string, amount: number, invoiceId: string): string {
     const formattedAmount = amount.toLocaleString('en-IN');
-    return `Namaste ${customerName}ji! Main Razorpay Rebound AI se baat kar raha hoon. Aapka overdue payment ₹${formattedAmount} for Invoice #${invoiceId} pending hai. Kya aap abhi UPI ya card se quick payment settle kar sakte hain?`;
+    return `Namaste ${customerName}ji! Main DhanVapsi AI se baat kar raha hoon. Aapka overdue payment ₹${formattedAmount} for Invoice #${invoiceId} pending hai. Kya aap abhi UPI ya card se quick payment settle kar sakte hain?`;
   }
 
   public handleUserResponse(userText: string, currentSession: VoiceSessionState): { nextSession: VoiceSessionState; agentReply: string } {

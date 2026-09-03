@@ -1,8 +1,8 @@
 <div align="center">
   
-# ⚡ Razorpay Rebound AI
+# ⚡ DhanVapsi AI (धनवापसी)
 
-### Autonomous Agentic Revenue Recovery Platform
+### Autonomous Agentic Revenue Recovery Platform — *"Paisa Wapas, Smartly."*
 
 **Track 03 — AI Revenue Recovery | Razorpay AI Buildathon 2026**
 
@@ -93,8 +93,8 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/razorpay-rebound-ai.git
-cd razorpay-rebound-ai
+git clone https://github.com/YOUR_USERNAME/dhanvapsi-ai.git
+cd dhanvapsi-ai
 
 # Install dependencies
 npm install
@@ -117,7 +117,7 @@ npm run preview
 ## 📂 Project Structure
 
 ```
-razorpay-rebound-ai/
+dhanvapsi-ai/
 ├── index.html                          # HTML entry point
 ├── package.json                        # Dependencies & scripts
 ├── vite.config.ts                      # Vite build configuration

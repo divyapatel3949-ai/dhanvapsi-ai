@@ -67,7 +67,7 @@ export function App() {
               <span className="text-xs text-rzp-textMuted font-mono">Track 03 • AI Revenue Recovery</span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-              Autonomous Agentic Revenue Recovery Platform
+              DhanVapsi AI <span className="text-rzp-gold">— धनवापसी</span>
             </h1>
             <p className="text-xs sm:text-sm text-rzp-textMuted max-w-3xl">
               Detects revenue leakage across payment degradation, cart drop-offs, failed mandates & B2B invoices. Features live batch money recovery simulation, RBI/DPDPA quiet hours, Hinglish voice agent & transparent audit trails.
@@ -156,7 +156,7 @@ export function App() {
       <footer className="bg-[#0B0F19] border-t border-rzp-border py-6 px-6 text-center text-xs text-rzp-textMuted">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center space-x-2">
-            <span className="font-bold text-slate-300">Razorpay Rebound AI</span>
+            <span className="font-bold text-slate-300">DhanVapsi AI (धनवापसी)</span>
             <span>— Track 03: AI Revenue Recovery</span>
           </div>
           <div>

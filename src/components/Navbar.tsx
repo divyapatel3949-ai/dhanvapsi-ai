@@ -31,10 +31,10 @@ export const Navbar: React.FC<NavbarProps> = ({
               <div className="flex items-center space-x-2">
                 <span className="font-extrabold text-lg text-white tracking-tight">Razorpay</span>
                 <span className="bg-rzp-blue/20 text-rzp-blue border border-rzp-blue/30 text-xs font-semibold px-2 py-0.5 rounded-md">
-                  REBOUND AI
+                  धनवापसी AI
                 </span>
               </div>
-              <p className="text-xs text-rzp-textMuted font-mono">Track 03 • AI Revenue Recovery</p>
+              <p className="text-xs text-rzp-textMuted font-mono">Track 03 • AI Revenue Recovery • DhanVapsi</p>
             </div>
           </div>
 

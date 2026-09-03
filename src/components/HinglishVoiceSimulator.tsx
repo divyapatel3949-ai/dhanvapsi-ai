@@ -207,7 +207,7 @@ export const HinglishVoiceSimulator: React.FC<HinglishVoiceSimulatorProps> = ({
                     : 'bg-rzp-blue text-white'
                 }`}>
                   <div className="flex items-center justify-between text-[10px] opacity-75 mb-1 font-mono">
-                    <span>{msg.sender === 'AGENT' ? 'Razorpay Rebound AI' : record.customerName}</span>
+                    <span>{msg.sender === 'AGENT' ? 'DhanVapsi AI (धनवापसी)' : record.customerName}</span>
                     <span>{msg.timestamp}</span>
                   </div>
                   <p className="leading-relaxed font-sans">{msg.text}</p>
