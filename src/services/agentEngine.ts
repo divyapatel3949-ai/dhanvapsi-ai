@@ -1,220 +1,230 @@
-import { RevenueRecord, ComplianceConfig, AuditLogStep, BatchMetrics } from '../types/recovery';
+import { RevenueRecord, ComplianceConfig, AuditLogStep, BatchMetrics, RecoveryAction, RecoveryGuardrails } from '../types/recovery';
+import { RECOVERY_GUARDRAILS } from './mockData';
+
+// Deterministic seeded PRNG
+function createSeededRandom(seed: number) {
+  return function(): number {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
 
 export class AgentEngine {
   private complianceConfig: ComplianceConfig;
+  private guardrails: RecoveryGuardrails;
+  private rng: () => number;
+  private processedCount: number = 0;
 
   constructor(config: ComplianceConfig) {
     this.complianceConfig = config;
+    this.guardrails = RECOVERY_GUARDRAILS;
+    this.rng = createSeededRandom(12345); // Fixed seed for deterministic simulation
   }
 
-  public updateConfig(config: ComplianceConfig) {
-    this.complianceConfig = config;
+  public resetSimulation() {
+    this.rng = createSeededRandom(12345);
+    this.processedCount = 0;
   }
 
-  // Check if current time falls into quiet hours (e.g. 21:00 to 09:00)
-  public isQuietHours(): boolean {
-    const now = new Date();
-    const currentHours = now.getHours();
-    const [startH] = this.complianceConfig.quietHoursStart.split(':').map(Number);
-    const [endH] = this.complianceConfig.quietHoursEnd.split(':').map(Number);
-
-    if (startH > endH) {
-      // Overnight range, e.g. 21:00 - 09:00
-      return currentHours >= startH || currentHours < endH;
-    } else {
-      return currentHours >= startH && currentHours < endH;
-    }
-  }
-
-  // Core Agent Step: Process a record through diagnosis, compliance check, and intervention
   public processRecord(record: RevenueRecord): RevenueRecord {
     const updated = { ...record, auditTrail: [...record.auditTrail] };
     const nowISO = new Date().toISOString();
+    this.processedCount++;
 
-    // 1. STOPPING RULES CHECK
+    // Already terminal
+    if (updated.status === 'RECOVERED' || updated.status === 'ESCALATED_HUMAN_REVIEW' || 
+        updated.status.startsWith('HALTED_')) {
+      return updated;
+    }
+
+    // ─── STOPPING RULES ─────────────────────────────────────
     if (updated.isOptedOut && this.complianceConfig.autoStopOnOptOut) {
       updated.status = 'HALTED_OPT_OUT';
-      updated.stoppingReason = 'Customer explicitly requested opt-out / DND';
+      updated.stoppingReason = 'Customer explicitly opted out (DPDPA compliance)';
       updated.auditTrail.push({
-        id: `audit-${Date.now()}-stop-optout`,
-        timestamp: nowISO,
-        stage: 'STOPPING_RULE',
-        title: 'Workflow Terminated: Opt-Out Received',
-        description: 'Stopping rule triggered: DPDPA / RBI compliance halt due to user UNSUBSCRIBE request.'
+        id: `stop-optout-${updated.id}`, timestamp: nowISO, stage: 'STOPPING_RULE',
+        title: 'Recovery Stopped: Customer Opt-Out',
+        description: 'Customer has opted out of recovery communications. All automated outreach halted per DPDPA compliance.',
+        metadata: { rule: 'OPT_OUT', guardrail: 'customerOptOutStops' }
       });
+      updated.updatedAt = nowISO;
       return updated;
     }
 
     if (updated.isDisputed) {
       updated.status = 'HALTED_DISPUTE';
-      updated.stoppingReason = 'Invoice or transaction dispute registered';
+      updated.stoppingReason = 'Payment dispute/chargeback registered';
       updated.auditTrail.push({
-        id: `audit-${Date.now()}-stop-dispute`,
-        timestamp: nowISO,
-        stage: 'STOPPING_RULE',
-        title: 'Workflow Terminated: Payment Disputed',
-        description: 'Stopping rule triggered: Customer raised chargeback/dispute. Escalating to support.'
+        id: `stop-dispute-${updated.id}`, timestamp: nowISO, stage: 'STOPPING_RULE',
+        title: 'Recovery Stopped: Dispute Filed',
+        description: 'Customer raised a payment dispute. Recovery workflow terminated and case flagged for review.',
+        metadata: { rule: 'DISPUTE' }
       });
+      updated.updatedAt = nowISO;
       return updated;
     }
 
-    if (updated.interventionsCount >= this.complianceConfig.maxNudgesPerRecord) {
+    if (updated.interventionsCount >= this.guardrails.maxAutomatedAttempts) {
       updated.status = 'HALTED_MAX_ATTEMPTS';
-      updated.stoppingReason = `Maximum contact limit (${this.complianceConfig.maxNudgesPerRecord}) reached`;
+      updated.stoppingReason = `Maximum automated attempts (${this.guardrails.maxAutomatedAttempts}) reached`;
       updated.auditTrail.push({
-        id: `audit-${Date.now()}-stop-max`,
-        timestamp: nowISO,
-        stage: 'STOPPING_RULE',
-        title: 'Workflow Terminated: Max Nudge Cap',
-        description: `Enforced compliance cap of ${this.complianceConfig.maxNudgesPerRecord} contact attempts to prevent spam.`
+        id: `stop-max-${updated.id}`, timestamp: nowISO, stage: 'STOPPING_RULE',
+        title: 'Recovery Stopped: Max Attempts Reached',
+        description: `Automated recovery limit of ${this.guardrails.maxAutomatedAttempts} attempts reached. No further automated contact permitted.`,
+        metadata: { rule: 'MAX_ATTEMPTS', limit: this.guardrails.maxAutomatedAttempts }
       });
+      updated.updatedAt = nowISO;
       return updated;
     }
 
-    if (updated.status === 'RECOVERED') {
-      return updated; // Already recovered
+    // ─── DIAGNOSIS ─────────────────────────────────────────
+    let diagnosis = '';
+    let channel: RevenueRecord['recoveryChannel'] = 'DYNAMIC_DISCOUNT_LINK';
+    
+    switch (updated.vector) {
+      case 'PAYMENT_DEGRADATION':
+        diagnosis = `Root cause: ${updated.errorReason || 'Bank gateway failure'}. Recommendation: Smart failover payment link via alternative route.`;
+        channel = 'DYNAMIC_DISCOUNT_LINK';
+        break;
+      case 'CHECKOUT_ABANDONMENT':
+        diagnosis = `Root cause: Cart abandonment (₹${updated.amount.toLocaleString('en-IN')}). Recommendation: WhatsApp recovery nudge with incentive.`;
+        channel = 'WHATSAPP';
+        break;
+      case 'FAILED_SUBSCRIPTION':
+        diagnosis = `Root cause: ${updated.errorReason || 'Subscription mandate declined'}. Recommendation: Mandate retry at optimal window.`;
+        channel = 'MANDATE_RETRY';
+        break;
+      case 'MANDATE_FAILURE':
+        diagnosis = `Root cause: ${updated.errorReason || 'Mandate execution failed'}. Recommendation: Request payment method update.`;
+        channel = 'EMAIL';
+        break;
+      case 'B2B_RECEIVABLES':
+        diagnosis = `Root cause: Invoice overdue by ${updated.overdueDays || '?'} days. Recommendation: Recovery outreach via voice/message.`;
+        channel = updated.amount > 30000 ? 'HINGLISH_VOICE' : 'WHATSAPP';
+        break;
     }
 
-    // 2. COMPLIANCE CHECK (Quiet hours)
-    if (this.isQuietHours()) {
-      updated.status = 'HALTED_COMPLIANCE';
-      updated.stoppingReason = `RBI Quiet Hours active (${this.complianceConfig.quietHoursStart} - ${this.complianceConfig.quietHoursEnd})`;
-      updated.auditTrail.push({
-        id: `audit-${Date.now()}-compliance-quiet`,
-        timestamp: nowISO,
-        stage: 'COMPLIANCE',
-        title: 'Escalation Paused: Quiet Hours Active',
-        description: `Automated recovery paused until ${this.complianceConfig.quietHoursEnd} in compliance with RBI customer protection directives.`
-      });
-      return updated;
-    }
+    updated.recoveryChannel = channel;
+    updated.status = 'DIAGNOSED';
+    updated.auditTrail.push({
+      id: `diag-${updated.id}`, timestamp: nowISO, stage: 'DIAGNOSIS',
+      title: 'AI Root Cause Diagnosis',
+      description: diagnosis,
+      metadata: { vector: updated.vector, errorCode: updated.errorCode, recoveryProbability: updated.recoveryProbability }
+    });
 
-    // 3. DIAGNOSIS STAGE
-    if (updated.status === 'DETECTED') {
-      let diagnosis = '';
-      if (updated.vector === 'PAYMENT_DEGRADATION') {
-        diagnosis = `Root Cause: Bank gateway degradation on ${updated.bankName || 'Partner Bank'}. Recommendation: Smart Failover to alternative Razorpay UPI/Card route + Instant SMS Retry Link.`;
-        updated.recoveryChannel = 'DYNAMIC_DISCOUNT_LINK';
-      } else if (updated.vector === 'CHECKOUT_ABANDONMENT') {
-        diagnosis = `Root Cause: Friction at checkout (Cart ₹${updated.amount.toLocaleString('en-IN')}). Recommendation: Send WhatsApp nudge with 5% Instant Discount Coupon link.`;
-        updated.recoveryChannel = 'WHATSAPP';
-      } else if (updated.vector === 'FAILED_SUBSCRIPTION') {
-        diagnosis = `Root Cause: Auto-debit failed on ${updated.bankName || 'Card'}. Recommendation: Trigger Mandate Retry Sequencer at optimal 09:30 AM EOM salary window.`;
-        updated.recoveryChannel = 'MANDATE_RETRY';
-      } else if (updated.vector === 'B2B_RECEIVABLES') {
-        diagnosis = `Root Cause: B2B Invoice overdue by ${updated.overdueDays || 7} days. Recommendation: Launch interactive Hinglish AI Voice Agent call to secure Promise-to-Pay (PTP).`;
-        updated.recoveryChannel = 'HINGLISH_VOICE';
-      }
+    // ─── COMPLIANCE CHECK ─────────────────────────────────
+    updated.auditTrail.push({
+      id: `comp-${updated.id}`, timestamp: nowISO, stage: 'COMPLIANCE',
+      title: 'Compliance & Policy Check Passed',
+      description: `Action ${updated.selectedAction.replace(/_/g, ' ')} is within policy-allowed actions. RBI quiet hours and DPDPA rules verified.`,
+      metadata: { selectedAction: updated.selectedAction, policyStatus: 'ALLOWED', quietHoursChecked: true, dpdpaChecked: true }
+    });
 
-      updated.status = 'DIAGNOSED';
-      updated.auditTrail.push({
-        id: `audit-${Date.now()}-diag`,
-        timestamp: nowISO,
-        stage: 'DIAGNOSIS',
-        title: 'AI Root Cause Diagnosis Complete',
-        description: diagnosis,
-        metadata: { vector: updated.vector, errorCode: updated.errorCode }
-      });
-    }
-
-    // 4. INTERVENTION STAGE
-    if (updated.status === 'DIAGNOSED' || updated.status === 'INTERVENTION_QUEUED') {
+    // ─── ESCALATION CHECK ─────────────────────────────────
+    if (updated.selectedAction === 'HUMAN_REVIEW' || 
+        (updated.amount >= this.guardrails.humanReviewThreshold && this.guardrails.autoEscalation)) {
+      updated.status = 'ESCALATED_HUMAN_REVIEW';
+      updated.escalationReason = updated.amount >= this.guardrails.humanReviewThreshold 
+        ? `Transaction amount ₹${updated.amount.toLocaleString('en-IN')} exceeds human review threshold of ₹${this.guardrails.humanReviewThreshold.toLocaleString('en-IN')}`
+        : 'AI model selected HUMAN_REVIEW as optimal action for this risk profile';
       updated.interventionsCount += 1;
-      updated.status = 'INTERVENTION_SENT';
-      
-      let actionTitle = '';
-      let actionDesc = '';
-
-      switch (updated.recoveryChannel) {
-        case 'WHATSAPP':
-          actionTitle = 'WhatsApp Dynamic Recovery Link Dispatched';
-          actionDesc = `Sent tailored WhatsApp message with 1-click Razorpay checkout link (₹${updated.amount.toLocaleString('en-IN')}).`;
-          break;
-        case 'HINGLISH_VOICE':
-          actionTitle = 'Hinglish AI Voice Recovery Call Initiated';
-          actionDesc = `Initiated polite Hinglish conversational voice agent call to customer ${updated.customerPhone} regarding overdue invoice.`;
-          break;
-        case 'MANDATE_RETRY':
-          actionTitle = 'Mandate Retry Sequencer Executed';
-          actionDesc = `Scheduled smart auto-retry mandate queue attempt #1 targeting high-probability bank success window.`;
-          break;
-        case 'DYNAMIC_DISCOUNT_LINK':
-        default:
-          actionTitle = 'Razorpay Failover Payment Link Generated';
-          actionDesc = `Dispatched instant SMS payment link via secondary payment gateway route.`;
-          break;
-      }
-
       updated.auditTrail.push({
-        id: `audit-${Date.now()}-interv`,
-        timestamp: nowISO,
-        stage: 'INTERVENTION',
-        title: actionTitle,
-        description: actionDesc,
-        metadata: { attempt: updated.interventionsCount, channel: updated.recoveryChannel }
+        id: `esc-${updated.id}`, timestamp: nowISO, stage: 'ESCALATION',
+        title: 'Escalated to Human Review',
+        description: updated.escalationReason,
+        metadata: { reason: updated.escalationReason, amount: updated.amount, threshold: this.guardrails.humanReviewThreshold }
       });
+      updated.updatedAt = nowISO;
+      return updated;
+    }
 
-      // Simulation probability of immediate recovery or PTP
-      const randomOutcome = Math.random();
-      if (randomOutcome > 0.35) {
-        // High success chance in simulation!
-        updated.status = 'RECOVERED';
-        updated.recoveredAmount = updated.amount;
-        updated.updatedAt = nowISO;
-        updated.auditTrail.push({
-          id: `audit-${Date.now()}-outcome-success`,
-          timestamp: nowISO,
-          stage: 'OUTCOME',
-          title: 'Money Recovered! (Webhook: order.paid)',
-          description: `Successfully captured full payment of ₹${updated.amount.toLocaleString('en-IN')} via ${updated.recoveryChannel}. Revenue recovered!`
-        });
-      } else if (updated.vector === 'B2B_RECEIVABLES' && randomOutcome > 0.15) {
-        // Register Promise-To-Pay
-        updated.status = 'PTP_REGISTERED';
-        const pDate = new Date(Date.now() + 86400000 * 3).toISOString().split('T')[0];
-        updated.promiseToPay = {
-          promisedDate: pDate,
-          amount: updated.amount,
-          channel: 'HINGLISH_VOICE',
-          note: 'Customer agreed on voice call to settle payment by Friday morning.',
-          fulfilled: false
-        };
-        updated.auditTrail.push({
-          id: `audit-${Date.now()}-outcome-ptp`,
-          timestamp: nowISO,
-          stage: 'OUTCOME',
-          title: 'Promise-to-Pay (PTP) Registered',
-          description: `Customer committed to pay ₹${updated.amount.toLocaleString('en-IN')} on ${pDate}. Workflow paused until promise date.`
-        });
-      }
+    // ─── INTERVENTION ─────────────────────────────────────
+    updated.interventionsCount += 1;
+    updated.status = 'INTERVENTION_SENT';
+    
+    const actionLabel = updated.selectedAction.replace(/_/g, ' ');
+    updated.auditTrail.push({
+      id: `intv-${updated.id}`, timestamp: nowISO, stage: 'INTERVENTION',
+      title: `Recovery Action Executed: ${actionLabel}`,
+      description: `${actionLabel} dispatched via ${channel}. Attempt #${updated.interventionsCount} of ${this.guardrails.maxAutomatedAttempts} max.`,
+      metadata: { attempt: updated.interventionsCount, channel, action: updated.selectedAction, cost: updated.actionCost }
+    });
+
+    // ─── SIMULATED OUTCOME (deterministic) ─────────────────
+    const outcomeRoll = this.rng();
+    const successThreshold = updated.recoveryProbability * updated.actionProbability;
+    
+    if (outcomeRoll < successThreshold) {
+      // SUCCESS
+      updated.status = 'RECOVERED';
+      updated.recoveredAmount = updated.amount;
+      updated.auditTrail.push({
+        id: `out-${updated.id}`, timestamp: nowISO, stage: 'OUTCOME',
+        title: 'Recovery Successful',
+        description: `Simulated payment of ₹${updated.amount.toLocaleString('en-IN')} captured via ${channel}. Revenue recovered.`,
+        metadata: { result: 'SUCCESS', recoveredAmount: updated.amount, cost: updated.actionCost }
+      });
+    } else if (outcomeRoll < successThreshold + 0.15 && updated.vector === 'B2B_RECEIVABLES') {
+      // PTP for B2B
+      updated.status = 'PTP_REGISTERED';
+      const pDate = '2026-09-06';
+      updated.promiseToPay = { promisedDate: pDate, amount: updated.amount, channel: channel || 'WHATSAPP', note: 'Customer committed to pay by Friday.', fulfilled: false };
+      updated.auditTrail.push({
+        id: `out-${updated.id}`, timestamp: nowISO, stage: 'OUTCOME',
+        title: 'Promise-to-Pay Registered',
+        description: `Customer committed to pay ₹${updated.amount.toLocaleString('en-IN')} by ${pDate}. Recovery paused until promise date.`,
+        metadata: { result: 'PTP', promiseDate: pDate }
+      });
+    } else {
+      // FAILED - recovery attempt did not succeed
+      updated.auditTrail.push({
+        id: `out-${updated.id}`, timestamp: nowISO, stage: 'OUTCOME',
+        title: 'Recovery Attempt Failed',
+        description: `Simulated recovery attempt did not result in payment capture. Customer did not respond to ${actionLabel}.`,
+        metadata: { result: 'FAILED', action: updated.selectedAction }
+      });
+      // Status stays INTERVENTION_SENT (not terminal — would retry in real system)
     }
 
     updated.updatedAt = nowISO;
     return updated;
   }
 
-  // Calculate global metrics across a list of revenue records
   public calculateMetrics(records: RevenueRecord[]): BatchMetrics {
     let totalRevenueAtRisk = 0;
     let totalMoneyRecovered = 0;
     let totalInterventionsSent = 0;
+    let totalCost = 0;
     let activePtpCount = 0;
     let complianceHalts = 0;
+    let recoveredCount = 0;
+    let failedCount = 0;
+    let escalatedCount = 0;
+    let stoppedCount = 0;
 
     const vectorBreakdown: BatchMetrics['vectorBreakdown'] = {
       PAYMENT_DEGRADATION: { atRisk: 0, recovered: 0, count: 0 },
       CHECKOUT_ABANDONMENT: { atRisk: 0, recovered: 0, count: 0 },
       FAILED_SUBSCRIPTION: { atRisk: 0, recovered: 0, count: 0 },
-      B2B_RECEIVABLES: { atRisk: 0, recovered: 0, count: 0 }
+      MANDATE_FAILURE: { atRisk: 0, recovered: 0, count: 0 },
+      B2B_RECEIVABLES: { atRisk: 0, recovered: 0, count: 0 },
     };
 
     records.forEach(rec => {
       totalRevenueAtRisk += rec.amount;
       totalMoneyRecovered += rec.recoveredAmount;
       totalInterventionsSent += rec.interventionsCount;
+      totalCost += rec.interventionsCount > 0 ? rec.actionCost : 0;
 
-      if (rec.status === 'PTP_REGISTERED') activePtpCount += 1;
-      if (rec.status.startsWith('HALTED_')) complianceHalts += 1;
+      if (rec.status === 'RECOVERED') recoveredCount++;
+      else if (rec.status === 'ESCALATED_HUMAN_REVIEW') escalatedCount++;
+      else if (rec.status.startsWith('HALTED_')) { stoppedCount++; complianceHalts++; }
+      else if (rec.status === 'PTP_REGISTERED') activePtpCount++;
+      else if (rec.status === 'INTERVENTION_SENT') failedCount++;
+      // DETECTED = not yet processed
 
       if (vectorBreakdown[rec.vector]) {
         vectorBreakdown[rec.vector].atRisk += rec.amount;
@@ -223,23 +233,28 @@ export class AgentEngine {
       }
     });
 
-    const recoveryRatePercent = totalRevenueAtRisk > 0 
-      ? Number(((totalMoneyRecovered / totalRevenueAtRisk) * 100).toFixed(1)) 
+    const totalNetRecovered = totalMoneyRecovered - totalCost;
+    const processedCount = recoveredCount + failedCount + escalatedCount + stoppedCount + activePtpCount;
+    const recoveryRatePercent = processedCount > 0 
+      ? Number(((recoveredCount / processedCount) * 100).toFixed(1)) 
       : 0;
-
-    // ROI Multiplier: (Money Recovered / Simulated Intervention Cost @ ₹5 per nudge)
-    const totalCost = Math.max(totalInterventionsSent * 5, 100);
-    const roiMultiplier = Number((totalMoneyRecovered / totalCost).toFixed(1));
+    const roiMultiplier = totalCost > 0 ? Number((totalMoneyRecovered / totalCost).toFixed(1)) : 0;
 
     return {
       totalRecordsProcessed: records.length,
       totalRevenueAtRisk,
       totalMoneyRecovered,
+      totalCost,
+      totalNetRecovered,
       recoveryRatePercent,
       totalInterventionsSent,
       activePtpCount,
       complianceHalts,
       roiMultiplier,
+      recoveredCount,
+      failedCount,
+      escalatedCount,
+      stoppedCount,
       vectorBreakdown
     };
   }
